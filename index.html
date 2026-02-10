@@ -33,7 +33,7 @@
                 </button>
                 <button class="nav-item" data-view="clientes" onclick="changeView('clientes')">
                     <span class="icon">🏢</span>
-                    <span>所属会社</span>
+                    <span>取引先</span>
                 </button>
                 <button class="nav-item" data-view="obras" onclick="changeView('obras')">
                     <span class="icon">🏗️</span>
@@ -79,7 +79,7 @@
                         <div id="obraInfoContainer" style="display: none; padding: 15px; background: #f8f9fa; border-radius: 8px; margin-top: 15px;">
                             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
                                 <div>
-                                    <strong>所属会社:</strong>
+                                    <strong>取引先:</strong>
                                     <div id="infoObraCliente" style="color: #666;">-</div>
                                 </div>
                                 <div>
@@ -163,7 +163,7 @@
                                 <input type="date" id="consultaFechaHasta" class="form-control">
                             </div>
                             <div class="form-group">
-                                <label for="consultaCliente">所属会社</label>
+                                <label for="consultaCliente">取引先</label>
                                 <select id="consultaCliente" class="form-control">
                                     <option value="">会社一覧</option>
                                 </select>
@@ -203,7 +203,7 @@
                                 <thead>
                                     <tr>
                                         <th>年月日</th>
-                                        <th>所属会社</th>
+                                        <th>取引先</th>
                                         <th>現場名</th>
                                         <th>作業員</th>
                                         <th>役職</th>
@@ -259,7 +259,7 @@
             <!-- Vista: Clientes -->
             <div id="view-clientes" class="view">
                 <div class="view-header">
-                    <h2>所属会社管理</h2>
+                    <h2>取引先管理</h2>
                     <button class="btn btn-primary" onclick="mostrarModalCliente()">
                         + 会社追加
                     </button>
@@ -305,7 +305,7 @@
                                 <thead>
                                     <tr>
                                         <th>現場名</th>
-                                        <th>所属会社</th>
+                                        <th>取引先</th>
                                         <th>責任者</th>
                                         <th>住所</th>
                                         <th>作業開始日</th>
@@ -373,7 +373,7 @@
                                 <input type="date" id="reporteFechaHasta" class="form-control">
                             </div>
                             <div class="form-group">
-                                <label for="reporteCliente">所属会社</label>
+                                <label for="reporteCliente">取引先</label>
                                 <select id="reporteCliente" class="form-control">
                                     <option value="">会社一覧</option>
                                 </select>
