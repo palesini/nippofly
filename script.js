@@ -355,7 +355,7 @@ async function cargarTablaEmpleados() {
                 <td>${emp.fecha_ingreso ? formatearFecha(emp.fecha_ingreso) : '-'}</td>
                 <td>
                     <span class="badge ${emp.estado === 'activo' ? 'badge-success' : 'badge-danger'}">
-                        ${emp.estado === 'activo' ? 'Activo' : 'Inactivo'}
+                        ${emp.estado === 'activo' ? '在職中' : '退職'}
                     </span>
                 </td>
                 <td>
