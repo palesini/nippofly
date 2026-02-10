@@ -804,7 +804,7 @@ async function cargarTablaObras() {
                         obra.estado === 'activa' ? 'badge-success' : 
                         obra.estado === 'pausada' ? 'badge-warning' : 'badge-info'
                     }">
-                        ${obra.estado.charAt(0).toUpperCase() + obra.estado.slice(1)}
+                        ${obra.estado === 'activa' ? '施工中' : obra.estado === 'pausada' ? '一時中止' : '終了'}
                     </span>
                 </td>
                 <td>
