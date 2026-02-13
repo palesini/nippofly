@@ -885,6 +885,9 @@ if __name__ == '__main__':
     # Asegurar que el directorio de datos existe (volumen Fly.io)
     os.makedirs(DATA_DIR, exist_ok=True)
 
+    print(f'[DB] Usando base de datos: {DATABASE}')
+    print(f'[DB] Directorio de datos: {DATA_DIR}')
+
     # Crear la base de datos si no existe
     if not os.path.exists(DATABASE):
         print('Creando base de datos...')
