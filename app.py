@@ -10,11 +10,13 @@ app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app)
 
 # Configuración de la base de datos
-DATABASE = 'asistencias.db'
-BACKUP_DIR = 'backups'
+# /data es el volumen persistente de Fly.io — sobrevive reinicios y redeploys
+DATA_DIR   = os.environ.get('DATA_DIR', '/data')
+DATABASE   = os.path.join(DATA_DIR, 'asistencias.db')
+BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 
 # PIN para descarga de base de datos (cámbialo por el que quieras)
-BACKUP_PIN = '0407'
+BACKUP_PIN = 'komei2024'
 
 # =====================================================
 # BACKUP AUTOMÁTICO DIARIO
@@ -880,6 +882,9 @@ def backup_descargar(key):
 # =====================================================
 
 if __name__ == '__main__':
+    # Asegurar que el directorio de datos existe (volumen Fly.io)
+    os.makedirs(DATA_DIR, exist_ok=True)
+
     # Crear la base de datos si no existe
     if not os.path.exists(DATABASE):
         print('Creando base de datos...')
@@ -892,9 +897,10 @@ if __name__ == '__main__':
     # Iniciar backup automático diario y limpieza semanal
     realizar_backup()
     limpiar_backups_viejos()
-    print(f'[Backup] Respaldo diario activado → carpeta /{BACKUP_DIR}/')
+    print(f'[Backup] Respaldo diario activado → {BACKUP_DIR}/')
     print(f'[Backup] Limpieza semanal activada → conserva los últimos {BACKUP_KEEP_COUNT} respaldos')
     
-    print('Servidor iniciado en http://localhost:5000')
+    port = int(os.environ.get('PORT', 8080))
+    print(f'Servidor iniciado en http://0.0.0.0:{port}')
     print('Presiona CTRL+C para detener')
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=False, host='0.0.0.0', port=port)
