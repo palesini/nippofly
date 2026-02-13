@@ -1,32 +1,82 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, send_file, render_template_string
 from flask_cors import CORS
 import sqlite3
 from datetime import datetime
 import os
+import shutil
+import threading
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app)
 
 # Configuración de la base de datos
 DATABASE = 'asistencias.db'
+BACKUP_DIR = 'backups'
+
+# PIN para descarga de base de datos (cámbialo por el que quieras)
+BACKUP_PIN = '0407'
 
 # =====================================================
-# RUTAS FRONTEND
+# BACKUP AUTOMÁTICO DIARIO
 # =====================================================
 
-@app.route('/')
-def index():
-    """Sirve el archivo index.html"""
-    return send_from_directory('.', 'index.html')
+BACKUP_KEEP_COUNT = 5       # Cantidad de backups a conservar
+CLEANUP_INTERVAL  = 604800  # Limpieza semanal (7 días en segundos)
 
-@app.route('/<path:path>')
-def send_static(path):
-    """Sirve archivos estáticos (CSS, JS, imágenes)"""
-    return send_from_directory('.', path)
+def limpiar_backups_viejos():
+    """Elimina los backups más viejos, conservando solo los últimos BACKUP_KEEP_COUNT."""
+    try:
+        if not os.path.exists(BACKUP_DIR):
+            return
 
-# =====================================================
-# FUNCIONES DE BASE DE DATOS
-# =====================================================
+        archivos = sorted([
+            f for f in os.listdir(BACKUP_DIR)
+            if f.startswith('asistencias_') and f.endswith('.db')
+        ], reverse=True)  # Más nuevo primero
+
+        a_eliminar = archivos[BACKUP_KEEP_COUNT:]  # Todo lo que pase de los últimos 5
+        for archivo in a_eliminar:
+            os.remove(os.path.join(BACKUP_DIR, archivo))
+            print(f'[Backup] Respaldo eliminado: {archivo}')
+
+        if a_eliminar:
+            print(f'[Backup] Limpieza semanal: {len(a_eliminar)} respaldo(s) eliminado(s), quedan {min(len(archivos), BACKUP_KEEP_COUNT)}')
+        else:
+            print(f'[Backup] Limpieza semanal: nada que eliminar ({len(archivos)} respaldo(s))')
+
+    except Exception as e:
+        print(f'[Backup] Error en limpieza: {e}')
+    finally:
+        # Programar la próxima limpieza en 7 días
+        timer = threading.Timer(CLEANUP_INTERVAL, limpiar_backups_viejos)
+        timer.daemon = True
+        timer.start()
+
+
+def realizar_backup():
+    """Crea una copia de respaldo de la DB con la fecha del día."""
+    try:
+        if not os.path.exists(DATABASE):
+            return
+
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        fecha_hoy = datetime.now().strftime('%Y%m%d')
+        destino = os.path.join(BACKUP_DIR, f'asistencias_{fecha_hoy}.db')
+
+        # Solo hacer backup si no existe uno de hoy
+        if not os.path.exists(destino):
+            shutil.copy2(DATABASE, destino)
+            print(f'[Backup] Respaldo creado: {destino}')
+        else:
+            print(f'[Backup] Ya existe respaldo de hoy: {destino}')
+
+    except Exception as e:
+        print(f'[Backup] Error al crear respaldo: {e}')
+    finally:
+        # Programar el próximo backup en 24 horas
+        timer = threading.Timer(86400, realizar_backup)
+        timer.daemon = True
+        timer.start()
 
 def get_db():
     """Obtiene una conexión a la base de datos"""
@@ -168,6 +218,22 @@ def init_db():
 # RUTAS - CLIENTES
 # =====================================================
 
+# =====================================================
+# RUTAS FRONTEND
+# =====================================================
+
+@app.route('/')
+def index():
+    return send_from_directory('.', 'index.html')
+
+@app.route('/<path:filename>')
+def static_files(filename):
+    return send_from_directory('.', filename)
+
+# =====================================================
+# CLIENTES
+# =====================================================
+
 @app.route('/api/clientes', methods=['GET'])
 def get_clientes():
     conn = get_db()
@@ -272,14 +338,14 @@ def delete_lider(id):
 
 @app.route('/api/empleados', methods=['GET'])
 def get_empleados():
+    estado = request.args.get('estado')
     conn = get_db()
     cursor = conn.cursor()
     
-    estado = request.args.get('estado', 'activo')
-    if estado == 'todos':
-        cursor.execute('SELECT * FROM empleados ORDER BY nombre, apellido')
-    else:
+    if estado:
         cursor.execute('SELECT * FROM empleados WHERE estado = ? ORDER BY nombre, apellido', (estado,))
+    else:
+        cursor.execute('SELECT * FROM empleados ORDER BY nombre, apellido')
     
     empleados = [dict(row) for row in cursor.fetchall()]
     conn.close()
@@ -428,11 +494,46 @@ def registrar_asistencias():
     conn = get_db()
     cursor = conn.cursor()
     
-    fecha = data['fecha']
-    obra_id = data['obra_id']
+    fecha    = data['fecha']
+    obra_id  = data['obra_id']
     lider_id = data['lider_id']
     registros = data['registros']
     
+    # ── Validar conflictos: empleados que ya marcaron PRESENTE en otra obra ese día ──
+    empleados_presentes = [
+        r['empleado_id'] for r in registros if r.get('presente') == True
+    ]
+    
+    conflictos = []
+    if empleados_presentes:
+        placeholders = ','.join('?' * len(empleados_presentes))
+        cursor.execute(f'''
+            SELECT a.empleado_id,
+                   e.nombre || '　' || e.apellido AS nombre_completo,
+                   o.nombre AS otra_obra
+            FROM asistencias a
+            INNER JOIN empleados e ON a.empleado_id = e.id
+            INNER JOIN obras o ON a.obra_id = o.id
+            WHERE a.fecha = ?
+              AND a.obra_id != ?
+              AND a.presente = 1
+              AND a.empleado_id IN ({placeholders})
+        ''', [fecha, obra_id] + empleados_presentes)
+        conflictos = [dict(row) for row in cursor.fetchall()]
+    
+    if conflictos:
+        conn.close()
+        # Armar mensaje en japonés con cada conflicto
+        detalles = ', '.join(
+            f"{c['nombre_completo']}（{c['otra_obra']}）" for c in conflictos
+        )
+        return jsonify({
+            'error': 'conflict',
+            'message': f'以下の作業員は既に別の現場で出勤済みです：{detalles}',
+            'conflictos': conflictos
+        }), 409
+
+    # ── Sin conflictos: guardar ──────────────────────────────────
     # Eliminar asistencias existentes para esa fecha y obra
     cursor.execute('DELETE FROM asistencias WHERE fecha = ? AND obra_id = ?', (fecha, obra_id))
     
@@ -519,6 +620,265 @@ def verificar_asistencia():
     return jsonify(asistencias)
 
 # =====================================================
+# DESCARGA DE BASE DE DATOS (URL PRIVADA + PIN)
+# =====================================================
+
+PAGE_BACKUP = '''<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>データベース管理</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Meiryo', sans-serif;
+            background: #1a1a2e;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 12px;
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo h1 { color: #e94560; font-size: 1.4rem; letter-spacing: 2px; }
+        .logo p  { color: #888; font-size: 0.85rem; margin-top: 6px; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 8px; }
+        input[type=password] {
+            width: 100%;
+            padding: 12px 16px;
+            background: #0f3460;
+            border: 1px solid #1a4a80;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 1rem;
+            letter-spacing: 4px;
+            text-align: center;
+            outline: none;
+        }
+        input[type=password]:focus { border-color: #e94560; }
+        .btn {
+            width: 100%;
+            padding: 13px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            font-family: inherit;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-primary { background: #e94560; color: #fff; margin-bottom: 10px; }
+        .btn-secondary { background: #0f3460; color: #aaa; }
+        .error {
+            background: rgba(233,69,96,0.15);
+            border: 1px solid #e94560;
+            border-radius: 8px;
+            color: #e94560;
+            padding: 10px 14px;
+            font-size: 0.875rem;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .file-list {
+            margin-top: 24px;
+            display: none;
+        }
+        .file-list h3 { color: #aaa; font-size: 0.85rem; margin-bottom: 12px; letter-spacing: 1px; }
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            background: #0f3460;
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+        .file-name { color: #ddd; font-size: 0.9rem; }
+        .file-date { color: #888; font-size: 0.75rem; }
+        .btn-download {
+            background: #1a4a80;
+            color: #7eb8f7;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            text-decoration: none;
+        }
+        .btn-download:hover { background: #e94560; color: #fff; }
+        .tag-current {
+            background: #e94560;
+            color: #fff;
+            font-size: 0.7rem;
+            padding: 2px 7px;
+            border-radius: 4px;
+            margin-left: 6px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="logo">
+        <h1>🗄️ データベース管理</h1>
+        <p>Komei Densetsu - バックアップ</p>
+    </div>
+
+    <div class="error" id="errorMsg">PINが正しくありません</div>
+
+    <div id="loginForm">
+        <div class="form-group">
+            <label>PINコードを入力してください</label>
+            <input type="password" id="pinInput" placeholder="••••••••" maxlength="20"
+                   onkeydown="if(event.key==='Enter') verificar()">
+        </div>
+        <button class="btn btn-primary" onclick="verificar()">🔓 確認</button>
+    </div>
+
+    <div class="file-list" id="fileList">
+        <h3>📁 利用可能なバックアップ</h3>
+        <div id="filesContainer"></div>
+        <div style="margin-top:16px;">
+            <button class="btn btn-secondary" onclick="logout()">🔒 ログアウト</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let pinOk = '';
+
+async function verificar() {
+    const pin = document.getElementById('pinInput').value;
+    if (!pin) return;
+
+    const res = await fetch('/backup/lista?pin=' + encodeURIComponent(pin));
+    if (res.status === 403) {
+        document.getElementById('errorMsg').style.display = 'block';
+        document.getElementById('pinInput').value = '';
+        return;
+    }
+
+    const data = await res.json();
+    pinOk = pin;
+    document.getElementById('errorMsg').style.display = 'none';
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('fileList').style.display = 'block';
+
+    const container = document.getElementById('filesContainer');
+    container.innerHTML = '';
+
+    if (data.archivos.length === 0) {
+        container.innerHTML = '<p style="color:#888;font-size:0.85rem;">バックアップがありません</p>';
+        return;
+    }
+
+    data.archivos.forEach((f, i) => {
+        const isLatest = i === 0;
+        container.innerHTML += `
+            <div class="file-item">
+                <div>
+                    <span class="file-name">${f.nombre}</span>
+                    ${isLatest ? '<span class="tag-current">最新</span>' : ''}
+                    <div class="file-date">${f.fecha} &nbsp;|&nbsp; ${f.tamaño}</div>
+                </div>
+                <a class="btn-download" href="/backup/descargar/${f.nombre}?pin=${encodeURIComponent(pinOk)}">
+                    ⬇ DL
+                </a>
+            </div>`;
+    });
+}
+
+function logout() {
+    pinOk = '';
+    document.getElementById('loginForm').style.display = 'block';
+    document.getElementById('fileList').style.display = 'none';
+    document.getElementById('pinInput').value = '';
+}
+</script>
+</body>
+</html>'''
+
+
+@app.route('/backup')
+def backup_page():
+    """Página de descarga de backups — URL privada."""
+    return render_template_string(PAGE_BACKUP)
+
+
+@app.route('/backup/lista')
+def backup_lista():
+    """Devuelve la lista de backups disponibles (requiere PIN)."""
+    pin = request.args.get('pin', '')
+    if pin != BACKUP_PIN:
+        return jsonify({'error': 'PIN incorrecto'}), 403
+
+    archivos = []
+    if os.path.exists(BACKUP_DIR):
+        for nombre in sorted(os.listdir(BACKUP_DIR), reverse=True):
+            if nombre.startswith('asistencias_') and nombre.endswith('.db'):
+                ruta = os.path.join(BACKUP_DIR, nombre)
+                stat = os.stat(ruta)
+                tamaño_kb = stat.st_size / 1024
+                fecha_mod = datetime.fromtimestamp(stat.st_mtime).strftime('%Y/%m/%d %H:%M')
+                archivos.append({
+                    'nombre': nombre,
+                    'fecha':  fecha_mod,
+                    'tamaño': f'{tamaño_kb:.1f} KB'
+                })
+
+    # También incluir la DB activa
+    if os.path.exists(DATABASE):
+        stat = os.stat(DATABASE)
+        archivos.insert(0, {
+            'nombre': 'asistencias.db (本番)',
+            'fecha':  datetime.fromtimestamp(stat.st_mtime).strftime('%Y/%m/%d %H:%M'),
+            'tamaño': f'{stat.st_size/1024:.1f} KB'
+        })
+
+    return jsonify({'archivos': archivos})
+
+
+@app.route('/backup/descargar/<filename>')
+def backup_descargar(filename):
+    """Descarga un archivo de backup (requiere PIN)."""
+    pin = request.args.get('pin', '')
+    if pin != BACKUP_PIN:
+        return jsonify({'error': 'PIN incorrecto'}), 403
+
+    # Solo permitir archivos .db para evitar path traversal
+    if not filename.endswith('.db') or '/' in filename or '\\' in filename or '..' in filename:
+        return jsonify({'error': 'Archivo no válido'}), 400
+
+    # Determinar si es la DB activa o un backup
+    if filename == 'asistencias.db (本番)':
+        if not os.path.exists(DATABASE):
+            return jsonify({'error': 'Archivo no encontrado'}), 404
+        return send_file(
+            os.path.abspath(DATABASE),
+            as_attachment=True,
+            download_name=f'asistencias_actual_{datetime.now().strftime("%Y%m%d_%H%M")}.db'
+        )
+
+    ruta = os.path.join(BACKUP_DIR, filename)
+    if not os.path.exists(ruta):
+        return jsonify({'error': 'Archivo no encontrado'}), 404
+
+    return send_file(os.path.abspath(ruta), as_attachment=True, download_name=filename)
+
+
+# =====================================================
 # INICIALIZACIÓN Y ARRANQUE
 # =====================================================
 
@@ -532,8 +892,12 @@ if __name__ == '__main__':
         # Verificar que existan las tablas
         init_db()
     
-    # Configurar puerto dinámico para Railway/Render
-    port = int(os.environ.get('PORT', 5000))
-    print(f'Servidor iniciado en puerto {port}')
+    # Iniciar backup automático diario y limpieza semanal
+    realizar_backup()
+    limpiar_backups_viejos()
+    print(f'[Backup] Respaldo diario activado → carpeta /{BACKUP_DIR}/')
+    print(f'[Backup] Limpieza semanal activada → conserva los últimos {BACKUP_KEEP_COUNT} respaldos')
+    
+    print('Servidor iniciado en http://localhost:5000')
     print('Presiona CTRL+C para detener')
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(debug=True, host='0.0.0.0', port=5000)
