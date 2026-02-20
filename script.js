@@ -6,6 +6,67 @@ let currentShift = 'dia';
 let registrosAsistencia = {};
 
 // =====================================================
+// SANITIZACIÓN XSS — escapar siempre antes de innerHTML
+// =====================================================
+function esc(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
+}
+
+// =====================================================
+// VALIDACIÓN DE FECHAS — año máx 4 dígitos, entre 2000-2099
+// =====================================================
+function limitarAnioFecha(input) {
+    const val = input.value;
+    if (!val) return;
+    const partes = val.split('-');
+    if (partes.length < 1) return;
+
+    let anio = partes[0];
+
+    // Si tiene más de 4 dígitos, cortar a los primeros 4
+    if (anio.length > 4) {
+        anio = anio.substring(0, 4);
+        partes[0] = anio;
+        input.value = partes.join('-');
+    }
+
+    // Si el año ya tiene 4 dígitos y no empieza con 20, corregir
+    if (anio.length === 4) {
+        const num = parseInt(anio);
+        if (num < 2000) {
+            partes[0] = '2000';
+            input.value = partes.join('-');
+            mostrarNotificacion('年は2000年以降を入力してください', 'error');
+        } else if (num > 2099) {
+            partes[0] = '2099';
+            input.value = partes.join('-');
+            mostrarNotificacion('年は2099年以前を入力してください', 'error');
+        }
+    }
+}
+
+function inicializarValidacionFechas() {
+    const ids = [
+        'registroFecha', 'consultaFechaDesde', 'consultaFechaHasta',
+        'reporteFechaDesde', 'reporteFechaHasta',
+        'empleadoFechaIngreso', 'obraFechaInicio', 'obraFechaFin'
+    ];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', () => limitarAnioFecha(el));
+            el.addEventListener('blur',   () => limitarAnioFecha(el));
+        }
+    });
+}
+
+// =====================================================
 // INICIALIZACIÓN
 // =====================================================
 
@@ -15,6 +76,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Establecer fecha actual
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('registroFecha').value = today;
+    
+    // Activar validación de años en todos los inputs de fecha
+    inicializarValidacionFechas();
     
     // Cargar datos iniciales
     await cargarDatosIniciales();
@@ -118,7 +182,7 @@ async function cargarEmpleadosRegistro() {
             const presente = registro.presente;
             
             const fotoHtml = empleado.foto 
-                ? `<img src="${empleado.foto}" class="employee-photo-small" alt="${empleado.nombre}">` 
+                ? `<img src="${esc(empleado.foto)}" class="employee-photo-small" alt="${esc(empleado.nombre)}">` 
                 : `<div class="employee-photo-placeholder">👷</div>`;
             
             const item = document.createElement('div');
@@ -128,8 +192,8 @@ async function cargarEmpleadosRegistro() {
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
                         ${fotoHtml}
                         <div>
-                            <div class="worker-name">${empleado.nombre} ${empleado.apellido}</div>
-                            <div class="worker-meta">${empleado.cargo || '役職なし'}${empleado.telefono ? ' • ' + empleado.telefono : ''}</div>
+                            <div class="worker-name">${esc(empleado.nombre)} ${esc(empleado.apellido)}</div>
+                            <div class="worker-meta">${esc(empleado.cargo) || '役職なし'}${empleado.telefono ? ' • ' + esc(String(empleado.telefono)) : ''}</div>
                         </div>
                     </div>
                 </div>
@@ -167,6 +231,9 @@ async function cargarEmpleadosRegistro() {
     }
 }
 
+// Debounce global para renders
+window.renderDebounce = null;
+
 function marcarAsistencia(empleadoId, presente) {
     if (!registrosAsistencia[empleadoId]) {
         registrosAsistencia[empleadoId] = {};
@@ -178,13 +245,24 @@ function marcarAsistencia(empleadoId, presente) {
         registrosAsistencia[empleadoId].presente = presente;
     }
     
-    // Recargar empleados respetando la obra seleccionada
-    const obraId = document.getElementById('registroObra').value;
-    if (obraId) {
-        cargarEmpleadosDeObra(obraId);
-    } else {
-        cargarEmpleadosRegistro();
-    }
+    // Actualizar stats instantáneamente
+    const presentes = Object.values(registrosAsistencia).filter(r => r.presente === true).length;
+    const ausentes = Object.values(registrosAsistencia).filter(r => r.presente === false).length;
+    const statP = document.getElementById('statPresentes');
+    const statA = document.getElementById('statAusentes');
+    if (statP) statP.textContent = presentes;
+    if (statA) statA.textContent = ausentes;
+    
+    // Re-render con debounce (mejora performance en 4G)
+    clearTimeout(window.renderDebounce);
+    window.renderDebounce = setTimeout(() => {
+        const obraId = document.getElementById('registroObra').value;
+        if (obraId) {
+            cargarEmpleadosDeObra(obraId);
+        } else {
+            cargarEmpleadosRegistro();
+        }
+    }, 200);
 }
 
 function actualizarHorasExtras(empleadoId, horas) {
@@ -323,7 +401,7 @@ async function cargarEmpleados() {
         if (select) {
             select.innerHTML = '<option value="">全作業員</option>';
             empleados.forEach(emp => {
-                select.innerHTML += `<option value="${emp.id}">${emp.nombre} ${emp.apellido}</option>`;
+                select.innerHTML += `<option value="${emp.id}">${esc(emp.nombre)} ${esc(emp.apellido)}</option>`;
             });
         }
     } catch (error) {
@@ -349,17 +427,17 @@ async function cargarTablaEmpleados() {
         empleados.forEach(emp => {
             // Generar HTML para la foto
             const fotoHtml = emp.foto 
-                ? `<img src="${emp.foto}" class="employee-photo-small" alt="${emp.nombre}" style="width: 50px; height: 50px; border-radius: 50%; object-fit: cover;">` 
+                ? `<img src="${emp.foto}" class="employee-photo-small" alt="${esc(emp.nombre)}" style="width: 50px; height: 50px; border-radius: 50%; object-fit: cover;">` 
                 : `<div class="employee-photo-placeholder" style="width: 50px; height: 50px; border-radius: 50%; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 24px;">👷</div>`;
             
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td style="text-align: center;">${fotoHtml}</td>
-                <td>${emp.nombre} ${emp.apellido}</td>
-                <td>${emp.dni || '-'}</td>
-                <td>${emp.cargo || '-'}</td>
-                <td>${emp.telefono || '-'}</td>
-                <td>${emp.fecha_ingreso ? formatearFecha(emp.fecha_ingreso) : '-'}</td>
+                <td>${esc(emp.nombre)} ${esc(emp.apellido)}</td>
+                <td>${esc(emp.dni) || '-'}</td>
+                <td>${esc(emp.cargo) || '-'}</td>
+                <td>${esc(emp.telefono) || '-'}</td>
+                <td>${emp.fecha_ingreso ? esc(formatearFecha(emp.fecha_ingreso)) : '-'}</td>
                 <td>
                     <span class="badge ${emp.estado === 'activo' ? 'badge-success' : 'badge-danger'}">
                         ${emp.estado === 'activo' ? '在職中' : '退職'}
@@ -608,7 +686,7 @@ async function cargarClientes() {
             if (select) {
                 select.innerHTML = '<option value="">全取引先</option>';
                 clientes.forEach(cliente => {
-                    select.innerHTML += `<option value="${cliente.id}">${cliente.nombre}</option>`;
+                    select.innerHTML += `<option value="${cliente.id}">${esc(cliente.nombre)}</option>`;
                 });
             }
         });
@@ -637,11 +715,11 @@ async function cargarTablaClientes() {
         clientes.forEach(cliente => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${cliente.nombre}</td>
-                <td>${cliente.razon_social || '-'}</td>
-                <td>${cliente.ruc_dni || '-'}</td>
-                <td>${cliente.telefono || '-'}</td>
-                <td>${cliente.email || '-'}</td>
+                <td>${esc(cliente.nombre)}</td>
+                <td>${esc(cliente.razon_social) || '-'}</td>
+                <td>${esc(cliente.ruc_dni) || '-'}</td>
+                <td>${esc(cliente.telefono) || '-'}</td>
+                <td>${esc(cliente.email) || '-'}</td>
                 <td>
                     <button class="btn btn-sm btn-secondary" onclick="editarCliente(${cliente.id})">変更</button>
                     <button class="btn btn-sm btn-danger" onclick="eliminarCliente(${cliente.id})">削除</button>
@@ -774,7 +852,7 @@ async function cargarObras() {
             if (select) {
                 select.innerHTML = '<option value="">現場を選択...</option>';
                 obras.filter(o => o.estado === 'activa').forEach(obra => {
-                    select.innerHTML += `<option value="${obra.id}">${obra.nombre}</option>`;
+                    select.innerHTML += `<option value="${obra.id}">${esc(obra.nombre)}</option>`;
                 });
             }
         });
@@ -801,11 +879,11 @@ async function cargarTablaObras() {
         obras.forEach(obra => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${obra.nombre}</td>
-                <td>${obra.cliente_nombre || '-'}</td>
-                <td>${obra.lider_nombre || '-'}</td>
-                <td>${obra.direccion || '-'}</td>
-                <td>${obra.fecha_inicio ? formatearFecha(obra.fecha_inicio) : '-'}</td>
+                <td>${esc(obra.nombre)}</td>
+                <td>${esc(obra.cliente_nombre) || '-'}</td>
+                <td>${esc(obra.lider_nombre) || '-'}</td>
+                <td>${esc(obra.direccion) || '-'}</td>
+                <td>${obra.fecha_inicio ? esc(formatearFecha(obra.fecha_inicio)) : '-'}</td>
                 <td>
                     <span class="badge ${
                         obra.estado === 'activa' ? 'badge-success' : 
@@ -853,7 +931,7 @@ async function cargarClientesYLideresParaObra() {
         const selectCliente = document.getElementById('obraCliente');
         selectCliente.innerHTML = '<option value="">取引先を選択...</option>';
         clientes.forEach(cliente => {
-            selectCliente.innerHTML += `<option value="${cliente.id}">${cliente.nombre}</option>`;
+            selectCliente.innerHTML += `<option value="${cliente.id}">${esc(cliente.nombre)}</option>`;
         });
         
         // Cargar líderes
@@ -863,7 +941,7 @@ async function cargarClientesYLideresParaObra() {
         const selectLider = document.getElementById('obraLider');
         selectLider.innerHTML = '<option value="">責任者を選択...</option>';
         lideres.forEach(lider => {
-            selectLider.innerHTML += `<option value="${lider.id}">${lider.nombre} ${lider.apellido}</option>`;
+            selectLider.innerHTML += `<option value="${lider.id}">${esc(lider.nombre)} ${esc(lider.apellido)}</option>`;
         });
     } catch (error) {
         console.error('Error al cargar clientes y líderes:', error);
@@ -1003,7 +1081,7 @@ async function cargarEmpleadosParaObra() {
                            ${checked}
                            onchange="toggleEmpleadoObra(${emp.id}, this.checked)"
                            style="margin-right: 10px;">
-                    <span>${emp.nombre} ${emp.apellido} - ${emp.cargo || '役職なし'}</span>
+                    <span>${esc(emp.nombre)} ${esc(emp.apellido)} - ${esc(emp.cargo) || '役職なし'}</span>
                 </label>
             `;
             container.appendChild(div);
@@ -1072,7 +1150,7 @@ async function cargarEmpleadosDeObra(obraId) {
             const presente = registro.presente;
             
             const fotoHtml = empleado.foto 
-                ? `<img src="${empleado.foto}" class="employee-photo-small" alt="${empleado.nombre}">` 
+                ? `<img src="${esc(empleado.foto)}" class="employee-photo-small" alt="${esc(empleado.nombre)}">` 
                 : `<div class="employee-photo-placeholder">👷</div>`;
             
             const item = document.createElement('div');
@@ -1082,8 +1160,8 @@ async function cargarEmpleadosDeObra(obraId) {
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
                         ${fotoHtml}
                         <div>
-                            <div class="worker-name">${empleado.nombre} ${empleado.apellido}</div>
-                            <div class="worker-meta">${empleado.cargo || '役職なし'}${empleado.telefono ? ' • ' + empleado.telefono : ''}</div>
+                            <div class="worker-name">${esc(empleado.nombre)} ${esc(empleado.apellido)}</div>
+                            <div class="worker-meta">${esc(empleado.cargo) || '役職なし'}${empleado.telefono ? ' • ' + esc(String(empleado.telefono)) : ''}</div>
                         </div>
                     </div>
                 </div>
@@ -1137,7 +1215,7 @@ async function cargarLideres() {
             if (select) {
                 select.innerHTML = '<option value="">全責任者</option>';
                 lideres.forEach(lider => {
-                    select.innerHTML += `<option value="${lider.id}">${lider.nombre} ${lider.apellido}</option>`;
+                    select.innerHTML += `<option value="${lider.id}">${esc(lider.nombre)} ${esc(lider.apellido)}</option>`;
                 });
             }
         });
@@ -1166,9 +1244,9 @@ async function cargarTablaLideres() {
         lideres.forEach(lider => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${lider.nombre} ${lider.apellido}</td>
-                <td>${lider.telefono || '-'}</td>
-                <td>${lider.email || '-'}</td>
+                <td>${esc(lider.nombre)} ${esc(lider.apellido)}</td>
+                <td>${esc(lider.telefono) || '-'}</td>
+                <td>${esc(lider.email) || '-'}</td>
                 <td>
                     <button class="btn btn-sm btn-secondary" onclick="editarLider(${lider.id})">変更</button>
                     <button class="btn btn-sm btn-danger" onclick="eliminarLider(${lider.id})">削除</button>
@@ -1331,11 +1409,11 @@ async function buscarAsistencias() {
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${formatearFecha(asist.fecha)}</td>
-                <td>${asist.cliente_nombre || '-'}</td>
-                <td>${asist.obra_nombre}</td>
-                <td>${asist.empleado_nombre} ${asist.empleado_apellido}</td>
-                <td>${asist.cargo || '-'}</td>
-                <td>${asist.lider_nombre} ${asist.lider_apellido}</td>
+                <td>${esc(asist.cliente_nombre) || '-'}</td>
+                <td>${esc(asist.obra_nombre)}</td>
+                <td>${esc(asist.empleado_nombre)} ${esc(asist.empleado_apellido)}</td>
+                <td>${esc(asist.cargo) || '-'}</td>
+                <td>${esc(asist.lider_nombre)} ${esc(asist.lider_apellido)}</td>
                 <td>
                     <span class="badge ${asist.presente ? 'badge-success' : 'badge-danger'}">
                         ${asist.presente ? '出席' : '欠席'}
